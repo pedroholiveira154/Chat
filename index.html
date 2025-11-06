@@ -1,0 +1,299 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Chat estilo Discord — Node + Socket.IO</title>
+  <link rel="stylesheet" href="style.css">
+  <style>
+    :root{
+      --bg: #2f3136;
+      --panel: #2b2e33;
+      --muted: #b9bbbe;
+      --accent: #7289da;
+      --msg-me: #3b82f6;
+      --msg-other: #36393f;
+      --white: #ffffff;
+      --online: #43b581;
+      --font: "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    }
+    *{box-sizing:border-box}
+    html,body{height:100%}
+    body{
+      margin:0;
+      font-family:var(--font);
+      background:var(--bg);
+      color:var(--white);
+    }
+  
+    /* layout */
+    .app {
+      height:100vh;
+      display:grid;
+      grid-template-columns: 76px 1fr 260px;
+      gap:16px;
+      padding:12px;
+    }
+    .leftbar { 
+      background: linear-gradient(180deg,#202225,#151618); border-radius:12px; padding:10px 8px; display:flex; flex-direction:column; gap:8px; align-items:center; }
+    .leftbar .server { 
+      width:48px; height:48px; border-radius:12px; background: var(--accent); display:flex; align-items:center; justify-content:center; font-weight:700; color:white; font-size:20px; }
+  
+    .panel { background:var(--panel); border-radius:12px; display:flex; flex-direction:column; overflow:hidden; }
+    .panel .header { padding:14px 18px; border-bottom:1px solid rgba(255,255,255,0.03); }
+    .panel .header h2{ font-size:16px; margin:0 }
+    .messages-wrap{ flex:1; overflow:auto; padding:18px; display:flex; flex-direction:column; gap:12px; }
+    ul#mensagens{ list-style:none; padding:0; margin:0; display:flex; flex-direction:column; gap:12px; }
+  
+    .message { display:flex; gap:10px; align-items:flex-end; max-width:820px; }
+    .message.me { margin-left:auto; flex-direction:row-reverse; align-items:flex-end; }
+    .avatar { width:44px; height:44px; border-radius:50%; background:#44454a; display:flex; align-items:center; justify-content:center; color:var(--white); font-weight:700; font-size:15px; position:relative; flex-shrink:0; }
+    .avatar.online::after{ content:""; position:absolute; right:0; bottom:0; width:12px; height:12px; background:var(--online); border-radius:50%; border:2px solid var(--panel); }
+  
+    .bubble { padding:10px 12px; border-radius:12px; background:var(--msg-other); color:var(--white); max-width:640px; font-size:14px; line-height:1.35; box-shadow: 0 2px 6px rgba(0,0,0,0.35); }
+    .message.me .bubble{ background:linear-gradient(90deg,var(--msg-me),#2563eb); color:white; }
+  
+    .meta { font-size:12px; color:var(--muted); margin-bottom:6px; }
+    .meta .name { font-weight:600; color:var(--white); margin-right:8px; font-size:13px; }
+  
+    /* composer */
+    .composer { padding:12px 14px; border-top:1px solid rgba(255,255,255,0.03); display:flex; gap:10px; align-items:center; }
+    .composer .name-wrapper { width:220px; transition:width 0.22s ease; }
+    .composer.joined .name-wrapper { width:0; overflow:hidden; }
+    .composer input[type="text"]{ border-radius:8px; padding:10px 12px; border:1px solid rgba(0,0,0,0.2); background:#36393f; color:var(--white); outline:none; font-size:14px; }
+    .composer input#nome { width:100%; }
+    .composer input#mensagem { flex:1; }
+    .composer button{ background:var(--accent); color:white; border:none; padding:10px 14px; border-radius:8px; cursor:pointer; font-weight:600; }
+  
+    /* members */
+    .members { background:#2b2e33; border-radius:12px; padding:12px; overflow:auto; }
+    .member { display:flex; gap:10px; align-items:center; padding:6px; border-radius:8px; }
+  
+    @media (max-width:900px){ .app{ grid-template-columns:56px 1fr; } .members{ display:none; } } 
+  
+  </style>
+</head>
+
+<body>
+  <div class="app">
+    <aside class="leftbar" aria-hidden="true">
+      <div class="server">S</div>
+      <div class="server" style="width:40px;height:40px;border-radius:10px;background:#2f3136;color:var(--muted);">#</div>
+    </aside>
+
+    <main class="panel" role="main" aria-label="Chat principal">
+      <div class="header">
+        <div>
+          <h2># general</h2>
+          <p style="color:var(--muted);margin:4px 0 0 0;font-size:13px">Canal público — seja educado</p>
+        </div>
+      </div>
+
+      <section class="messages-wrap">
+        <ul id="mensagens" aria-live="polite"></ul>
+      </section>
+
+      <form id="form" class="composer" autocomplete="off">
+        <div class="name-wrapper" id="nameWrapper">
+          <input id="nome" type="text" placeholder="Seu nome de usuário (clique/enter para confirmar)" />
+        </div>
+        <input id="mensagem" type="text" placeholder="Escreva uma mensagem..." />
+        <button type="submit">Enviar</button>
+      </form>
+    </main>
+
+    <aside class="members" aria-label="Usuários conectados">
+      <h3 style="margin:0 0 8px 0;color:var(--muted)">Usuários ativos</h3>
+      <div id="usuariosList"></div>
+    </aside>
+  </div>
+
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script>
+    const socket = io();
+
+    const nomeInput = document.getElementById('nome');
+    const mensagemInput = document.getElementById('mensagem');
+    const mensagensEl = document.getElementById('mensagens');
+    const usuariosListEl = document.getElementById('usuariosList');
+    const form = document.getElementById('form');
+    const nameWrapper = document.getElementById('nameWrapper');
+
+    let myName = '';
+    // guarda localIds das mensagens que este cliente já exibiu (evita eco duplo)
+    const displayedLocalIds = new Set();
+
+    // gerar id simples
+    function generateLocalId(){
+      return Date.now().toString(36) + '-' + Math.random().toString(36).slice(2,9);
+    }
+
+    function initials(name){
+      if(!name) return '?';
+      return name.split(' ').slice(0,2).map(s => s[0]?.toUpperCase() || '').join('');
+    }
+
+    function addMessage({nome, mensagem, ts, self=false, online=true, localId}) {
+      // se veio com localId e já foi exibida por este cliente, ignore (evita duplicado por eco)
+      if(localId && displayedLocalIds.has(localId) && !self) return;
+
+      // se for a própria mensagem e já foi exibida (por localId), não exibir outra vez
+      if(localId && self && displayedLocalIds.has(localId)) return;
+
+      // marque como exibida se tiver localId (para evitar eco futuro)
+      if(localId) displayedLocalIds.add(localId);
+
+      const li = document.createElement('li');
+      li.className = 'message' + (self ? ' me' : '');
+
+      const avatar = document.createElement('div');
+      avatar.className = 'avatar' + (online ? ' online' : '');
+      avatar.textContent = initials(nome);
+
+      const bubble = document.createElement('div');
+      bubble.className = 'bubble';
+
+      const meta = document.createElement('div');
+      meta.className = 'meta';
+      const nameSpan = document.createElement('span');
+      nameSpan.className = 'name';
+      nameSpan.textContent = nome;
+      const timeSpan = document.createElement('span');
+      timeSpan.className = 'time';
+      const date = ts ? new Date(ts) : new Date();
+      timeSpan.textContent = date.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+
+      meta.appendChild(nameSpan);
+      meta.appendChild(timeSpan);
+
+      const txt = document.createElement('div');
+      txt.textContent = mensagem;
+
+      bubble.appendChild(meta);
+      bubble.appendChild(txt);
+
+      li.appendChild(avatar);
+      li.appendChild(bubble);
+
+      mensagensEl.appendChild(li);
+      // rolar até o final
+      mensagensEl.parentElement.scrollTop = mensagensEl.parentElement.scrollHeight;
+    }
+
+    function updateUsers(users){
+      usuariosListEl.innerHTML = '';
+      users.forEach(u => {
+        const el = document.createElement('div');
+        el.className = 'member';
+        const a = document.createElement('div');
+        a.className = 'mini-avatar';
+        a.style.width = '36px'; a.style.height = '36px'; a.style.borderRadius='50%';
+        a.style.background = '#44454a'; a.style.display='flex'; a.style.alignItems='center'; a.style.justifyContent='center';
+        a.textContent = initials(u.name || u);
+        const n = document.createElement('div');
+        n.className = 'name';
+        n.textContent = u.name || u;
+        const s = document.createElement('div');
+        s.className = 'status';
+        s.style.color = 'var(--muted)';
+        s.style.marginLeft = 'auto';
+        s.textContent = u.online ? 'online' : 'offline';
+        el.appendChild(a);
+        el.appendChild(n);
+        el.appendChild(s);
+        usuariosListEl.appendChild(el);
+      });
+    }
+
+    // quando usuário clica ou confirma nome, esconde o campo de nome e move o campo de mensagem
+    function confirmName(){
+      const name = nomeInput.value.trim();
+      if(!name) return false;
+      myName = name;
+      // notificar servidor que entrou
+      socket.emit('join', { name: myName });
+      // adicionar classe 'joined' para animação/ocultação
+      form.classList.add('joined');
+      // esconde o wrapper para o input de nome (mantendo value internamente)
+      nameWrapper.style.width = '0';
+      nameWrapper.style.overflow = 'hidden';
+      nomeInput.disabled = true;
+      mensagemInput.focus();
+      return true;
+    }
+
+    // confirmar ao clicar no campo de nome (selecionar) conforme seu pedido
+    nomeInput.addEventListener('focus', () => {
+      // se o usuário clicar no campo de nome e digitar e apertar Enter, confirmName será chamado no keydown
+      // também podemos confirmar imediatamente quando o usuário clicar (se já tiver valor)
+      // aqui apenas mantemos o comportamento natural
+    });
+
+    nomeInput.addEventListener('keydown', (e) => {
+      if(e.key === 'Enter'){
+        e.preventDefault();
+        confirmName();
+      }
+    });
+
+    // Se usuário clicar fora, confirma também (caso tenha digitado)
+    nomeInput.addEventListener('blur', () => {
+      if(nomeInput.value.trim()) confirmName();
+    });
+
+    // envio do formulário
+    form.addEventListener('submit', e => {
+      e.preventDefault();
+      const text = mensagemInput.value.trim();
+      if(!text) return;
+
+      // garante que nome esteja confirmado
+      if(!myName){
+        // tenta confirmar automaticamente
+        const ok = confirmName();
+        if(!ok){
+          alert('Escolha um nome antes de enviar');
+          return;
+        }
+      }
+
+      // criar localId e payload
+      const localId = generateLocalId();
+      const payload = {
+        nome: myName,
+        mensagem: text,
+        ts: Date.now(),
+        localId // ID para evitar eco duplicado
+      };
+
+      // mostrar localmente como "self" (rápido)
+      addMessage({...payload, self:true});
+
+      // enviar ao servidor
+      socket.emit('chat message', payload);
+
+      mensagemInput.value = '';
+      mensagemInput.focus();
+    });
+
+    // quando receber do servidor
+    socket.on('chat message', (data) => {
+      // se veio com localId que este cliente já exibiu (displayedLocalIds), então é eco — ignore
+      // caso contrário, exiba (para outros usuários)
+      addMessage({...data, self: data.nome === myName});
+    });
+
+    socket.on('users', (list) => {
+      updateUsers(list.map(u => ({ name: u.name || u, online: !!u.online })));
+    });
+
+    socket.on('system', msg => {
+      addMessage({ nome: 'Sistema', mensagem: msg, ts: Date.now(), self:false });
+    });
+
+    // solicita lista de usuários (opcional)
+    //socket.emit('request users');
+  </script>
+</body>
+</html>
